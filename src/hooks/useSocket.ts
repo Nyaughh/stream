@@ -63,9 +63,21 @@ export const useSocket = () => {
     }
   };
 
-  const syncUrl = (roomId: string, url: string) => {
+  const syncUrl = (roomId: string, url: string, timestamp: number = 0) => {
     if (socket && isConnected) {
-      socket.emit("sync-url", { roomId, url });
+      socket.emit("sync-url", { roomId, url, timestamp });
+    }
+  };
+
+  const syncVideoState = (roomId: string, isPlaying: boolean, timestamp: number) => {
+    if (socket && isConnected) {
+      socket.emit("video-state-change", { roomId, isPlaying, timestamp });
+    }
+  };
+
+  const requestVideoState = (roomId: string) => {
+    if (socket && isConnected) {
+      socket.emit("request-video-state", { roomId });
     }
   };
 
@@ -75,10 +87,18 @@ export const useSocket = () => {
     }
   };
 
-  const onUrlChange = (callback: (url: string) => void) => {
+  const onUrlChange = (callback: (data: { url: string; timestamp: number }) => void) => {
     if (socket && isConnected) {
       socket.on("url-changed", callback);
       return () => socket.off("url-changed", callback);
+    }
+    return () => {};
+  };
+
+  const onVideoStateUpdate = (callback: (state: { isPlaying: boolean; timestamp: number }) => void) => {
+    if (socket && isConnected) {
+      socket.on("video-state-updated", callback);
+      return () => socket.off("video-state-updated", callback);
     }
     return () => {};
   };
@@ -120,8 +140,11 @@ export const useSocket = () => {
     joinRoom,
     leaveRoom,
     syncUrl,
+    syncVideoState,
+    requestVideoState,
     sendMessage,
     onUrlChange,
+    onVideoStateUpdate,
     onNewMessage,
     onMemberJoin,
     onMemberLeave,

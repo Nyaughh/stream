@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { Card } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -8,6 +8,7 @@ import { ScrollArea } from "../../components/ui/scroll-area";
 import { useSocket } from "../../hooks/useSocket";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { api } from "~/trpc/react";
+import ReactPlayer from 'react-player';
 
 interface RoomMember {
   id: string;
@@ -30,6 +31,9 @@ export default function WatchTogether() {
   const [isInRoom, setIsInRoom] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [members, setMembers] = useState<RoomMember[]>([]);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const playerRef = useRef<ReactPlayer>(null);
+  const [seeking, setSeeking] = useState(false);
   
   const socket = useSocket();
   const utils = api.useUtils();
@@ -99,8 +103,11 @@ export default function WatchTogether() {
 
   useEffect(() => {
     if (socket?.isConnected) {
-      const unsubscribeUrl = socket.onUrlChange((newUrl: string) => {
-        setUrl(newUrl);
+      const unsubscribeUrl = socket.onUrlChange(({ url, timestamp }) => {
+        setUrl(url);
+        if (playerRef.current) {
+          playerRef.current.seekTo(timestamp, 'seconds');
+        }
       });
 
       const unsubscribeMessage = socket.onNewMessage((msg: { user: RoomMember; text: string; timestamp: string }) => {
@@ -145,12 +152,20 @@ export default function WatchTogether() {
         ]);
       });
 
+      const unsubscribeVideoState = socket.onVideoStateUpdate(({ isPlaying, timestamp }) => {
+        setIsPlaying(isPlaying);
+        if (!seeking && playerRef.current) {
+          playerRef.current.seekTo(timestamp, 'seconds');
+        }
+      });
+
       return () => {
         unsubscribeUrl();
         unsubscribeMessage();
         unsubscribeMemberJoin();
         unsubscribeMemberLeave();
         unsubscribeRoomState();
+        unsubscribeVideoState();
       };
     }
   }, [socket?.isConnected]);
@@ -197,11 +212,34 @@ export default function WatchTogether() {
       return;
     }
     if (isInRoom) {
+      const currentTime = playerRef.current?.getCurrentTime() ?? 0;
       updateUrlMutation.mutate({ roomId, url });
-      socket.syncUrl(roomId, url);
+      socket.syncUrl(roomId, url, currentTime);
       setError(null);
     }
   };
+
+  const handlePlay = useCallback(() => {
+    if (isInRoom) {
+      setIsPlaying(true);
+      socket.syncVideoState(roomId, true, playerRef.current?.getCurrentTime() ?? 0);
+    }
+  }, [isInRoom, roomId]);
+
+  const handlePause = useCallback(() => {
+    if (isInRoom) {
+      setIsPlaying(false);
+      socket.syncVideoState(roomId, false, playerRef.current?.getCurrentTime() ?? 0);
+    }
+  }, [isInRoom, roomId]);
+
+  const handleSeek = useCallback((seconds: number) => {
+    if (isInRoom) {
+      setSeeking(true);
+      socket.syncVideoState(roomId, isPlaying, seconds);
+      setTimeout(() => setSeeking(false), 1000);
+    }
+  }, [isInRoom, roomId, isPlaying]);
 
   const sendMessage = () => {
     if (!session) {
@@ -272,18 +310,29 @@ export default function WatchTogether() {
                   </Button>
                 </div>
                 <div className="aspect-video bg-gray-800 rounded-lg">
-                  <div className="w-full h-full flex items-center justify-center text-white">
-                    {url ? (
-                      <iframe 
-                        src={url} 
-                        className="w-full h-full border-0"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-                      />
-                    ) : (
-                      <p>Enter a URL to start watching</p>
-                    )}
-                  </div>
+                  {url ? (
+                    <ReactPlayer
+                      ref={playerRef}
+                      url={url}
+                      width="100%"
+                      height="100%"
+                      playing={isPlaying}
+                      controls={true}
+                      onPlay={handlePlay}
+                      onPause={handlePause}
+                      onSeek={handleSeek}
+                      config={{
+                        youtube: {
+                          playerVars: { 
+                            origin: window.location.origin,
+                            modestbranding: 1,
+                          }
+                        }
+                      }}
+                    />
+                  ) : (
+                    <p className="text-white text-center p-4">Enter a URL to start watching</p>
+                  )}
                 </div>
               </Card>
             </div>
