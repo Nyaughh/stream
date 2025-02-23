@@ -9,6 +9,8 @@ import { useSocket } from "../../hooks/useSocket";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { api } from "~/trpc/react";
 import ReactPlayer from 'react-player';
+import { LogOut } from "lucide-react";
+import { Play, Users, MessageSquare, Tv } from "lucide-react";
 
 interface RoomMember {
   id: string;
@@ -22,6 +24,9 @@ interface Message {
   timestamp: string;
 }
 
+const SYNC_THRESHOLD = 2; // seconds
+const SYNC_INTERVAL = 5000; // milliseconds
+
 export default function WatchTogether() {
   const { data: session, status } = useSession();
   const [url, setUrl] = useState("");
@@ -34,6 +39,7 @@ export default function WatchTogether() {
   const [isPlaying, setIsPlaying] = useState(false);
   const playerRef = useRef<ReactPlayer>(null);
   const [seeking, setSeeking] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
   
   const socket = useSocket();
   const utils = api.useUtils();
@@ -153,9 +159,12 @@ export default function WatchTogether() {
       });
 
       const unsubscribeVideoState = socket.onVideoStateUpdate(({ isPlaying, timestamp }) => {
-        setIsPlaying(isPlaying);
-        if (!seeking && playerRef.current) {
-          playerRef.current.seekTo(timestamp, 'seconds');
+        if (!seeking) {
+          setIsPlaying(isPlaying);
+          const currentTime = playerRef.current?.getCurrentTime() ?? 0;
+          if (needsSync(currentTime, timestamp)) {
+            playerRef.current?.seekTo(timestamp, 'seconds');
+          }
         }
       });
 
@@ -169,6 +178,28 @@ export default function WatchTogether() {
       };
     }
   }, [socket?.isConnected]);
+
+  useEffect(() => {
+    if (isInRoom && playerRef.current) {
+      const syncInterval = setInterval(() => {
+        if (!seeking && playerRef.current) {
+          const currentTime = playerRef.current.getCurrentTime();
+          socket.syncVideoState(roomId, isPlaying, currentTime);
+        }
+      }, SYNC_INTERVAL);
+
+      return () => clearInterval(syncInterval);
+    }
+  }, [isInRoom, roomId, seeking, isPlaying]);
+
+  useEffect(() => {
+    if (isInRoom && url) {
+      const currentTime = playerRef.current?.getCurrentTime() ?? 0;
+      updateUrlMutation.mutate({ roomId, url });
+      socket.syncUrl(roomId, url, currentTime);
+      setError(null);
+    }
+  }, [url, isInRoom]);
 
   const createRoom = () => {
     if (!session) {
@@ -220,26 +251,32 @@ export default function WatchTogether() {
   };
 
   const handlePlay = useCallback(() => {
-    if (isInRoom) {
+    if (isInRoom && !seeking) {
       setIsPlaying(true);
-      socket.syncVideoState(roomId, true, playerRef.current?.getCurrentTime() ?? 0);
+      const currentTime = playerRef.current?.getCurrentTime() ?? 0;
+      socket.syncVideoState(roomId, true, currentTime);
     }
-  }, [isInRoom, roomId]);
+  }, [isInRoom, roomId, seeking]);
 
   const handlePause = useCallback(() => {
-    if (isInRoom) {
+    if (isInRoom && !seeking) {
       setIsPlaying(false);
-      socket.syncVideoState(roomId, false, playerRef.current?.getCurrentTime() ?? 0);
+      const currentTime = playerRef.current?.getCurrentTime() ?? 0;
+      socket.syncVideoState(roomId, false, currentTime);
     }
-  }, [isInRoom, roomId]);
+  }, [isInRoom, roomId, seeking]);
 
   const handleSeek = useCallback((seconds: number) => {
-    if (isInRoom) {
+    if (isInRoom && !seeking) {
       setSeeking(true);
       socket.syncVideoState(roomId, isPlaying, seconds);
       setTimeout(() => setSeeking(false), 1000);
     }
-  }, [isInRoom, roomId, isPlaying]);
+  }, [isInRoom, roomId, isPlaying, seeking]);
+
+  const needsSync = useCallback((currentTime: number, targetTime: number) => {
+    return Math.abs(currentTime - targetTime) > SYNC_THRESHOLD;
+  }, []);
 
   const sendMessage = () => {
     if (!session) {
@@ -257,6 +294,16 @@ export default function WatchTogether() {
     setError(null);
   };
 
+  const copyRoomId = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000); // Reset after 2 seconds
+    } catch (err) {
+      console.error('Failed to copy room ID:', err);
+    }
+  };
+
   if (status === "loading") {
     return (
       <main className="container mx-auto p-4">
@@ -268,48 +315,57 @@ export default function WatchTogether() {
   }
 
   return (
-    <main className="container mx-auto p-4">
-      {!session ? (
-        <div className="flex flex-col items-center justify-center min-h-screen gap-4">
-          <h1 className="text-4xl font-bold">Watch Together</h1>
-          <p className="text-xl text-gray-600">Sign in to start watching with friends</p>
-          <Button onClick={() => signIn("discord")}>Sign in with Discord</Button>
-        </div>
-      ) : (
-        <>
-          {error && (
-            <div className="mb-4 p-4 bg-destructive/10 text-destructive rounded-md">
-              {error}
-            </div>
-          )}
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-4">
-              <img
-                src={session.user?.image ?? ""}
-                alt={session.user?.name ?? ""}
-                className="w-10 h-10 rounded-full"
-              />
-              <span className="font-medium">{session.user?.name}</span>
-            </div>
-            <Button variant="outline" onClick={() => signOut()}>
-              Sign out
+    <div className="min-h-screen bg-[#030711] text-cyan-400 p-4 overflow-hidden">
+      {/* Enhanced background */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.3),rgba(255,255,255,0))]"></div>
+      <div className="absolute inset-0 bg-[url('/grid.png')] opacity-[0.02]"></div>
+
+      <div className="max-w-7xl mx-auto relative z-10">
+        {!session ? (
+          <div className="flex flex-col items-center justify-center min-h-screen gap-6">
+            <h1 className="text-5xl font-mono tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-cyan-200 to-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.25)]">
+              NEON SYNC
+            </h1>
+            <Button 
+              onClick={() => signIn("discord")}
+              className="bg-cyan-400/10 hover:bg-cyan-400/20 border border-cyan-400/50 text-cyan-300 font-mono px-8 py-6 text-lg shadow-[0_0_15px_rgba(34,211,238,0.15)] transition-all duration-300 hover:shadow-[0_0_25px_rgba(34,211,238,0.25)]"
+            >
+              CONNECT
             </Button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Main content area */}
-            <div className="md:col-span-2">
-              <Card className="p-4">
-                <div className="flex gap-2 mb-4">
-                  <Input 
-                    placeholder="Enter website URL" 
-                    value={url} 
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUrl(e.target.value)}
+        ) : (
+          <>
+            {error && (
+              <div className="mb-4 p-3 bg-red-950/30 border border-red-500/50 text-red-400 rounded-md font-mono text-sm shadow-[0_0_15px_rgba(239,68,68,0.15)]">
+                {error}
+              </div>
+            )}
+            <header className="flex justify-between items-center mb-8">
+              <h1 className="text-3xl font-mono tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-cyan-200 to-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.25)]">
+                NEON SYNC
+              </h1>
+              <div className="flex items-center gap-6">
+                <div className="flex items-center gap-3 bg-cyan-400/5 pl-1 pr-2 py-1 rounded border border-cyan-400/20">
+                  <img 
+                    src={session.user?.image ?? ""} 
+                    alt={session.user?.name ?? ""} 
+                    className="h-8 w-8 border border-cyan-400/30"
                   />
-                  <Button onClick={handleUrlChange} disabled={!isInRoom || !socket.isConnected}>
-                    Load
-                  </Button>
+                  <span className="text-sm font-mono text-cyan-200">{session.user?.name?.toUpperCase()}</span>
                 </div>
-                <div className="aspect-video bg-gray-800 rounded-lg">
+                <Button
+                  variant="ghost"
+                  onClick={() => signOut()}
+                  className="text-red-400 hover:text-red-300 hover:bg-red-950/30 px-4 py-2 font-mono text-sm border border-red-500/20 rounded hover:border-red-500/40 transition-all duration-300"
+                >
+                  DISCONNECT
+                </Button>
+              </div>
+            </header>
+
+            <main className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="lg:col-span-2 space-y-4">
+                <div className="aspect-video bg-black rounded-lg border border-cyan-400/20 shadow-[0_0_30px_rgba(34,211,238,0.1)] overflow-hidden">
                   {url ? (
                     <ReactPlayer
                       ref={playerRef}
@@ -331,116 +387,143 @@ export default function WatchTogether() {
                       }}
                     />
                   ) : (
-                    <p className="text-white text-center p-4">Enter a URL to start watching</p>
+                    <div className="flex items-center justify-center h-full bg-cyan-950/10">
+                      <span className="text-cyan-400/50 font-mono text-lg tracking-widest animate-pulse">NO SIGNAL</span>
+                    </div>
                   )}
                 </div>
-              </Card>
-            </div>
 
-            {/* Sidebar */}
-            <div className="space-y-4">
-              <Card className="p-4">
-                <h2 className="text-lg font-bold mb-4">Room Controls</h2>
-                <div className="space-y-2">
+                <div className="flex gap-3">
+                  <Input
+                    placeholder="ENTER URL"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    disabled={!isInRoom || !socket.isConnected}
+                    className="bg-black/50 border-cyan-400/30 focus:border-cyan-400 focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 font-mono text-sm"
+                  />
+                  <Button
+                    onClick={handleUrlChange}
+                    disabled={!isInRoom || !socket.isConnected}
+                    className="bg-cyan-400/10 hover:bg-cyan-400/20 border border-cyan-400/50 text-cyan-300 font-mono"
+                  >
+                    SYNC
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="p-4 bg-cyan-950/10 rounded-lg border border-cyan-400/20 shadow-[0_0_15px_rgba(34,211,238,0.1)]">
+                  <h2 className="text-sm font-mono mb-4 text-cyan-200 tracking-wider">ROOM CONTROL</h2>
                   {!isInRoom ? (
-                    <>
-                      <Button 
-                        onClick={createRoom} 
-                        className="w-full"
-                        disabled={!socket.isConnected}
+                    <div className="space-y-3">
+                      <Button
+                        onClick={createRoom}
+                        className="w-full bg-cyan-400/10 hover:bg-cyan-400/20 border border-cyan-400/50 text-cyan-300 font-mono shadow-[0_0_10px_rgba(34,211,238,0.15)] transition-all duration-300"
+                        disabled={!socket.isConnected || createRoomMutation.status === 'pending'}
                       >
-                        Create Room
+                        {createRoomMutation.status === 'pending' ? '...' : 'CREATE ROOM'}
                       </Button>
-                      <div className="flex gap-2">
-                        <Input 
-                          placeholder="Room ID" 
-                          value={roomId} 
-                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoomId(e.target.value)}
-                        />
-                        <Button 
-                          onClick={joinRoom}
-                          disabled={!socket.isConnected}
+                      <Input
+                        placeholder="ROOM ID"
+                        value={roomId}
+                        onChange={(e) => setRoomId(e.target.value)}
+                        className="bg-black/50 border-cyan-400/30 focus:border-cyan-400 focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 font-mono text-sm"
+                      />
+                      <Button
+                        onClick={joinRoom}
+                        disabled={!socket.isConnected}
+                        className="w-full bg-cyan-400/10 hover:bg-cyan-400/20 border border-cyan-400/50 text-cyan-300 font-mono shadow-[0_0_10px_rgba(34,211,238,0.15)] transition-all duration-300"
+                      >
+                        JOIN
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between p-3 bg-black/30 rounded-md border border-cyan-400/30">
+                        <div className="font-mono">
+                          <div className="text-xs text-cyan-400/70">ROOM ID</div>
+                          <div className="text-sm text-cyan-200">{roomId}</div>
+                        </div>
+                        <Button
+                          onClick={copyRoomId}
+                          variant="ghost"
+                          className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-400/10 px-3 py-1.5 font-mono text-sm border border-cyan-400/20 rounded transition-all duration-300"
                         >
-                          Join
+                          {isCopied ? 'COPIED' : 'COPY'}
                         </Button>
                       </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="p-2 bg-gray-100 rounded mb-2">
-                        <p className="font-medium">Room ID: {roomId}</p>
-                        <p className="text-sm text-gray-500">Share this ID with your friends</p>
-                      </div>
-                      <div className="p-2 bg-gray-100 rounded mb-2">
-                        <p className="font-medium">Room Members ({members.length})</p>
-                        <div className="flex flex-wrap gap-2 mt-2">
+                      <div className="p-3 bg-black/30 rounded-md border border-cyan-400/30">
+                        <div className="text-xs font-mono text-cyan-400/70 mb-2">USERS · {members.length}</div>
+                        <div className="flex flex-wrap gap-2">
                           {members.map((member) => (
-                            <div key={member.id} className="flex items-center gap-2 bg-white p-1 rounded">
+                            <div key={member.id} className="flex items-center gap-2 bg-cyan-400/5 px-2 py-1.5 rounded border border-cyan-400/20">
                               {member.image && (
-                                <img src={member.image} alt={member.name} className="w-6 h-6 rounded-full" />
+                                <img src={member.image} alt={member.name} className="w-5 h-5 rounded-full border border-cyan-400/30" />
                               )}
-                              <span className="text-sm">{member.name}</span>
+                              <span className="text-xs font-mono text-cyan-200">{member.name}</span>
                             </div>
                           ))}
                         </div>
                       </div>
-                      <Button onClick={leaveRoom} variant="destructive" className="w-full">
-                        Leave Room
+                      <Button
+                        onClick={leaveRoom}
+                        className="w-full bg-red-950/30 hover:bg-red-950/50 border border-red-500/50 text-red-400 font-mono shadow-[0_0_10px_rgba(239,68,68,0.15)] transition-all duration-300"
+                      >
+                        DISCONNECT
                       </Button>
-                    </>
+                    </div>
                   )}
                 </div>
-              </Card>
 
-              <Card className="p-4">
-                <h2 className="text-lg font-bold mb-4">Chat</h2>
-                <ScrollArea className="h-[300px] mb-4">
-                  <div className="space-y-2">
-                    {messages.map((msg, i) => (
-                      <div 
-                        key={i} 
-                        className={`p-2 rounded ${
-                          msg.user.id === "system" 
-                            ? "bg-gray-100 text-gray-600 text-sm text-center" 
-                            : "bg-gray-100"
-                        }`}
-                      >
-                        {msg.user.id !== "system" && (
-                          <div className="flex justify-between text-sm text-gray-500">
-                            <div className="flex items-center gap-2">
+                <div className="flex flex-col h-[400px] p-4 bg-cyan-950/10 rounded-lg border border-cyan-400/20 shadow-[0_0_15px_rgba(34,211,238,0.1)]">
+                  <h2 className="text-sm font-mono mb-4 text-cyan-200 tracking-wider">CHAT</h2>
+                  <ScrollArea className="flex-grow mb-4 pr-4">
+                    <div className="space-y-3">
+                      {messages.map((msg, i) => (
+                        <div
+                          key={i}
+                          className={`p-2 rounded border border-cyan-400/10 ${
+                            msg.user.id === "system"
+                              ? "bg-cyan-400/5 text-cyan-400/70 text-xs text-center"
+                              : "bg-black/30"
+                          }`}
+                        >
+                          {msg.user.id !== "system" && (
+                            <div className="flex items-center gap-2 mb-2">
                               {msg.user.image && (
-                                <img src={msg.user.image} alt={msg.user.name} className="w-6 h-6 rounded-full" />
+                                <img src={msg.user.image} alt={msg.user.name} className="w-5 h-5 rounded-full border border-cyan-400/30" />
                               )}
-                              <span className="font-bold">{msg.user.name}</span>
+                              <span className="text-xs font-mono text-cyan-400/70">{msg.user.name}</span>
                             </div>
-                            <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
-                          </div>
-                        )}
-                        <p className={msg.user.id === "system" ? "text-center" : ""}>{msg.text}</p>
-                      </div>
-                    ))}
+                          )}
+                          <p className="text-sm font-mono text-cyan-200">{msg.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                  <div className="flex gap-3">
+                    <Input
+                      placeholder="MESSAGE"
+                      value={message}
+                      onChange={(e) => setMessage(e.target.value)}
+                      onKeyPress={(e) => e.key === "Enter" && sendMessage()}
+                      disabled={!isInRoom || !socket.isConnected}
+                      className="bg-black/50 border-cyan-400/30 focus:border-cyan-400 focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 font-mono text-sm"
+                    />
+                    <Button
+                      onClick={sendMessage}
+                      disabled={!isInRoom || !socket.isConnected}
+                      className="bg-cyan-400/10 hover:bg-cyan-400/20 border border-cyan-400/50 text-cyan-300 font-mono"
+                    >
+                      SEND
+                    </Button>
                   </div>
-                </ScrollArea>
-                <div className="flex gap-2">
-                  <Input 
-                    placeholder="Type a message" 
-                    value={message}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMessage(e.target.value)}
-                    onKeyPress={(e: React.KeyboardEvent) => e.key === "Enter" && sendMessage()}
-                    disabled={!isInRoom || !socket.isConnected}
-                  />
-                  <Button 
-                    onClick={sendMessage} 
-                    disabled={!isInRoom || !socket.isConnected}
-                  >
-                    Send
-                  </Button>
                 </div>
-              </Card>
-            </div>
-          </div>
-        </>
-      )}
-    </main>
+              </div>
+            </main>
+          </>
+        )}
+      </div>
+    </div>
   );
 } 

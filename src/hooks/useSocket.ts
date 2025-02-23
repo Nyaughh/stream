@@ -7,12 +7,19 @@ interface RoomMember {
   image?: string;
 }
 
+const getSocketUrl = () => {
+  if (process.env.NODE_ENV === "production") {
+    return process.env.NEXT_PUBLIC_WEBSOCKET_URL || "wss://your-websocket-server.com";
+  }
+  return "http://localhost:3001";
+};
+
 export const useSocket = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
-    const newSocket = io("http://localhost:3001", {
+    const newSocket = io(getSocketUrl(), {
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
       autoConnect: true,
