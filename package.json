@@ -13,7 +13,8 @@
     "postinstall": "prisma generate",
     "lint": "next lint",
     "start": "next start",
-    "socket-server": "node server.mjs"
+    "socket-server": "node server.mjs",
+    "socket": "tsx watch server.ts"
   },
   "dependencies": {
     "@auth/core": "^0.37.4",
